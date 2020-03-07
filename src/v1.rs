@@ -7,9 +7,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-type HmacSha1 = Hmac<Sha1>;
+use crate::util;
 
-type Params<'a> = std::collections::HashMap<&'a str, &'a str>;
+type HmacSha1 = Hmac<Sha1>;
 
 // https://tools.ietf.org/html/rfc5849#section-3.6
 // * ALPHA, DIGIT, '-', '.', '_', '~' MUST NOT be encoded.
@@ -22,9 +22,18 @@ const TARGETS_FOR_PARAMS: &AsciiSet = &percent_encoding::NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'~');
 
-const DEFAULT_SIGNATURE: &'static str = "HMAC-SHA1";
-const OAUTH_VERSION: &'static str = "1.0";
+const DEFAULT_SIGNATURE: &str = "HMAC-SHA1";
+const OAUTH_VERSION: &str = "1.0";
 
+const OAUTH_HEADER: &str = "OAuth";
+const OAUTH_PARAM_KEY_NONCE: &str = "oauth_nonce";
+const OAUTH_PARAM_KEY_CALLBACK: &str = "oauth_callback";
+const OAUTH_PARAM_KEY_SIGNATURE_METHOD: &str = "oauth_signature_method";
+const OAUTH_PARAM_KEY_TIMESTAMP: &str = "oauth_timestamp";
+const OAUTH_PARAM_KEY_VERSION: &str = "oauth_version";
+const OAUTH_PARAM_KEY_CONSUMER_KEY: &str = "oauth_consumer_key";
+
+/// OAuth Signature Builder
 pub struct OAuthSignBuilder<TokenType> {
     oauth_consumer_key: String,
     oauth_nonce: String,
@@ -35,9 +44,10 @@ pub struct OAuthSignBuilder<TokenType> {
     encoded_parameters: HashMap<String, String>,
 }
 
-// token-free impl
+/// OAuthSignBuilder that not bound with an Access Token.
 impl OAuthSignBuilder<()> {
-    pub fn new(consumer_key: impl Into<String>) -> Self {
+    /// Constructor of OAuthSignBuilder with OAuth consumer_key.
+    pub fn new<K: Into<String> + ?Sized>(consumer_key: K) -> Self {
         // set with default values.
         OAuthSignBuilder {
             oauth_consumer_key: consumer_key.into(),
@@ -50,8 +60,9 @@ impl OAuthSignBuilder<()> {
         }
     }
 
+    /// Generate OAuth signature to specified URL.
     pub fn sign_to_url(&self, url: &url::Url, http_method: &str, consumer_secret: &str) -> String {
-        let (endpoint, url_encoded_query) = url_to_endpoint_and_queries(url);
+        let (endpoint, url_encoded_query) = util::url_to_endpoint_and_queries(url);
         self.sign_impl(
             endpoint,
             url_encoded_query,
@@ -61,7 +72,12 @@ impl OAuthSignBuilder<()> {
         )
     }
 
-    pub fn sign(
+    /// Generate OAuth signature with specified endpoint and query.
+    pub fn sign(&self, endpoint: &str, http_method: &str, consumer_secret: &str) -> String {
+        self.sign_impl(endpoint, HashMap::new(), http_method, consumer_secret, None)
+    }
+
+    pub fn sign_with_query(
         &self,
         endpoint: &str,
         url_encoded_query: &str,
@@ -70,7 +86,7 @@ impl OAuthSignBuilder<()> {
     ) -> String {
         self.sign_impl(
             endpoint,
-            query_to_hashmap(url_encoded_query),
+            util::query_to_hashmap(url_encoded_query),
             http_method,
             consumer_secret,
             None,
@@ -100,7 +116,7 @@ impl OAuthSignBuilder<String> {
         consumer_secret: &str,
         token_secret: &str,
     ) -> String {
-        let (endpoint, url_encoded_query) = url_to_endpoint_and_queries(url);
+        let (endpoint, url_encoded_query) = util::url_to_endpoint_and_queries(url);
         self.sign_impl(
             endpoint,
             url_encoded_query,
@@ -120,7 +136,7 @@ impl OAuthSignBuilder<String> {
     ) -> String {
         self.sign_impl(
             endpoint,
-            query_to_hashmap(url_encoded_query),
+            util::query_to_hashmap(url_encoded_query),
             http_method,
             consumer_secret,
             Some((&self.oauth_token, token_secret)),
@@ -204,13 +220,17 @@ impl<TokenType> OAuthSignBuilder<TokenType> {
         consumer_secret: &str,
         token_and_secret: Option<(&str, &str)>,
     ) -> String {
-        // destructure token and secret
+        // destructuring token and secret
         let (token, token_secret) = token_and_secret
             .map(|(t, s)| (Some(t), Some(s)))
             .unwrap_or((None, None));
 
         // build authorization basic parameters
-        let timestamp = format!("{}", self.oauth_timestamp.unwrap_or(Utc::now().timestamp()));
+        let timestamp = format!(
+            "{}",
+            self.oauth_timestamp
+                .unwrap_or_else(|| Utc::now().timestamp())
+        );
         let mut basic_params = vec![
             ("oauth_consumer_key", &self.oauth_consumer_key),
             ("oauth_signature_method", &self.oauth_signature_method),
@@ -253,7 +273,7 @@ impl<TokenType> OAuthSignBuilder<TokenType> {
         // create signature string to sign
         let param_str = params
             .iter()
-            .filter(|(k, v)| k != "realm") // "realm" is a special parameter
+            .filter(|(k, _)| k != "realm") // "realm" is a special parameter
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<String>>()
             .join("&");
@@ -289,8 +309,7 @@ impl<TokenType> OAuthSignBuilder<TokenType> {
 #[test]
 fn test_builder() {
     let builder = OAuthSignBuilder::new("ck")
-    .add_param("param1", "value1_ud_plus+hy-qu'dq\"1-9!@#$%^&*()_+-NS=[])
-    .add_param(key: &str, value: &str)
+        .add_param("param1", "value1_ud_plus+hy-qu'dq\"1-9!@#$%^&*()_+-NS=[]");
 }
 
 #[test]
@@ -301,7 +320,7 @@ fn test_signing() {
     let c_key = "xvz1evFS4wEEPTGEFPHBog";
     let c_secret = "kAcSOqF21Fu85e7zjz7ZN2U4ZRhfV3WpwPAoE3Z7kBw";
     let nonce = "kYjzVBB8Y0ZFabxSWbWovY3uYSQ2pTgmZeNu2VS4cg";
-    let timestamp = 1318622958;
+    let timestamp = 1_318_622_958;
     let token = "370773112-GmHxMAgYyLbNEtIKZeRNFsMKPR9EyMZeS9weJAEb";
     let token_secret = "LswwdoUaIvS8ltyTt5jkRh4J50vUPVVHtR2YPi5kE";
     let sign = OAuthSignBuilder::new_with_token(c_key, token)
@@ -322,7 +341,7 @@ fn test_signing() {
     let c_key = "dpf43f3p2l4k3l03";
     let c_secret = "kd94hf93k423kf44";
     let nonce = "wIjqoS";
-    let timestamp = 137131200;
+    let timestamp = 137_131_200;
 
     let sign = OAuthSignBuilder::new(c_key)
         .oauth_nonce(nonce)
@@ -333,57 +352,4 @@ fn test_signing() {
         .sign_to_url(&endpoint, method, c_secret);
     println!("{:#?}", sign);
     assert_eq!(sign, "74KNZJeDHnMBp0EMJ9ZHt/XKycU=");
-}
-
-fn url_to_endpoint_and_queries(url: &url::Url) -> (&str, HashMap<&str, &str>) {
-    // queries save into hashmap.
-    let map = if let Some(query) = url.query() {
-        query_to_hashmap(query)
-    } else {
-        HashMap::new()
-    };
-    let body = url.as_str().split('?').next();
-    (body.unwrap_or(url.as_str()), map)
-}
-
-#[test]
-fn test_url_to_endpoint_and_queries() {
-    let s = "http://example.com/example+.html?quever?=salting=parsing&&&&&vir!@$========%^&*()_=askparity++++==&パラメータ=テストパラメータ";
-    let u = url::Url::parse(s).unwrap();
-    let (core, map2) = url_to_endpoint_and_queries(&u);
-    assert_eq!(core, "http://example.com/example+.html");
-    assert_eq!(map2["quever?"], "salting=parsing");
-    assert_eq!(map2["vir!@$"], "=======%^");
-    assert_eq!(map2["*()_"], "askparity++++==");
-    assert_eq!(
-        map2["%E3%83%91%E3%83%A9%E3%83%A1%E3%83%BC%E3%82%BF"],
-        "%E3%83%86%E3%82%B9%E3%83%88%E3%83%91%E3%83%A9%E3%83%A1%E3%83%BC%E3%82%BF"
-    );
-}
-
-fn query_to_hashmap(query: &str) -> HashMap<&str, &str> {
-    query
-        .trim_start_matches('?')
-        .split('&')
-        .filter(|s| !s.is_empty())
-        .map(|s| s.splitn(2, '=').collect::<Vec<&str>>())
-        .filter(|v| v.len() == 2)
-        .map(|v| (v[0], v[1]))
-        .collect()
-}
-
-#[test]
-fn test_query_to_hashmap() {
-    let map =
-        query_to_hashmap("parameter=value&!%40%23%24%25^%26*()_%2B=!%40%23%24%25^%26*()_%2B%3D");
-    assert_eq!(map["parameter"], "value");
-    assert_eq!(
-        map["!%40%23%24%25^%26*()_%2B"],
-        "!%40%23%24%25^%26*()_%2B%3D"
-    );
-    let map2 =
-        query_to_hashmap("quever?=salting=parsing&&&&&vir!@$========%^&*()_=askparity++++==");
-    assert_eq!(map2["quever?"], "salting=parsing");
-    assert_eq!(map2["vir!@$"], "=======%^");
-    assert_eq!(map2["*()_"], "askparity++++==");
 }
