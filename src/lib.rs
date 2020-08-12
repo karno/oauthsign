@@ -1,19 +1,16 @@
+pub mod builder;
+pub mod parameters;
+
 pub mod v1;
-pub mod v1a;
 pub mod v2;
 
 mod util;
 
-use serde::Serialize;
+pub use self::builder::OAuthSignBuilder;
+pub use self::builder::OAuthSigner;
+pub use self::parameters::*;
 
-pub trait OAuthSignBuilder {
-    fn query<T: Serialize + ?Sized>(self, query: T) -> Self;
-
-    fn query_pair<K: Into<String> + ?Sized, V: Into<String> + ?Sized>(
-        self,
-        key: K,
-        value: V,
-    ) -> Self {
-        self.query(&[(key.into(), value.into())])
-    }
-}
+#[cfg(not(feature = "without-reqwest"))]
+pub mod reqwest_bridge;
+#[cfg(not(feature = "without-reqwest"))]
+pub use self::reqwest_bridge::*;
